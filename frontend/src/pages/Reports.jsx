@@ -24,13 +24,16 @@ export default function Reports() {
   }, []);
 
   const loadUsage = () => {
+    setError("");
     api.get("/reports/usage", { params: { year, month } })
       .then((r) => setUsageData(r.data))
-      .catch(() => {});
+      .catch((err) => setError(err.response?.data?.detail || "Kullanim verisi yuklenemedi"));
   };
 
   const loadInvoices = () => {
-    api.get("/reports/invoices").then((r) => setInvoices(r.data)).catch(() => {});
+    api.get("/reports/invoices")
+      .then((r) => setInvoices(r.data))
+      .catch(() => {});
   };
 
   useEffect(() => {
