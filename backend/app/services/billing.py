@@ -2,7 +2,6 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 
 from app.models.subscription import Subscription
 from app.models.subscription_phase import SubscriptionPhase
@@ -11,59 +10,81 @@ from app.models.monthly_invoice import MonthlyInvoice
 from app.models.tax import Tax
 
 
-def calculate_daily_usage(db: Session, target_date: date):
-    """Calculate daily usage for all active subscriptions for a given date."""
+def calculate_daily_usage_for_subscription(db: Session, sub: Subscription, target_date: date):
+    """Calculate daily usage for a single subscription on a given date."""
     day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
 
-    subscriptions = db.query(Subscription).filter(Subscription.is_active == True).all()
+    phases = (
+        db.query(SubscriptionPhase)
+        .filter(
+            SubscriptionPhase.subscription_id == sub.id,
+            SubscriptionPhase.start_time < day_end,
+            (SubscriptionPhase.end_time.is_(None)) | (SubscriptionPhase.end_time > day_start),
+        )
+        .order_by(SubscriptionPhase.start_time)
+        .all()
+    )
 
+    if not phases:
+        return
+
+    last_phase = phases[-1]
+    days_in_month = _days_in_month(target_date.year, target_date.month)
+    daily_cost = (last_phase.amount * last_phase.unit_price) / Decimal(days_in_month)
+
+    existing = (
+        db.query(DailyUsage)
+        .filter(DailyUsage.subscription_id == sub.id, DailyUsage.date == target_date)
+        .first()
+    )
+    if existing:
+        existing.amount = last_phase.amount
+        existing.unit_price = last_phase.unit_price
+        existing.daily_cost = daily_cost
+    else:
+        db.add(DailyUsage(
+            subscription_id=sub.id,
+            date=target_date,
+            amount=last_phase.amount,
+            unit_price=last_phase.unit_price,
+            daily_cost=daily_cost,
+        ))
+
+
+def calculate_daily_usage(db: Session, target_date: date):
+    """Calculate daily usage for all subscriptions for a given date."""
+    subscriptions = db.query(Subscription).all()
     for sub in subscriptions:
-        # Find all phases that overlap with this day
-        phases = (
-            db.query(SubscriptionPhase)
-            .filter(
-                SubscriptionPhase.subscription_id == sub.id,
-                SubscriptionPhase.start_time < day_end,
-                (SubscriptionPhase.end_time.is_(None)) | (SubscriptionPhase.end_time > day_start),
-            )
-            .order_by(SubscriptionPhase.start_time)
-            .all()
-        )
+        calculate_daily_usage_for_subscription(db, sub, target_date)
+    db.commit()
 
-        if not phases:
-            continue
 
-        # If more than one phase in a day, use the last phase's price for the whole day
-        last_phase = phases[-1]
-        days_in_month = _days_in_month(target_date.year, target_date.month)
-        daily_cost = (last_phase.amount * last_phase.unit_price) / Decimal(days_in_month)
+def backfill_daily_usages(db: Session, city_id: int, year: int, month: int):
+    """Calculate all daily usages for a city in a given month."""
+    subs = db.query(Subscription).filter(Subscription.city_id == city_id).all()
+    if not subs:
+        return
 
-        # Upsert daily usage
-        existing = (
-            db.query(DailyUsage)
-            .filter(DailyUsage.subscription_id == sub.id, DailyUsage.date == target_date)
-            .first()
-        )
-        if existing:
-            existing.amount = last_phase.amount
-            existing.unit_price = last_phase.unit_price
-            existing.daily_cost = daily_cost
-        else:
-            usage = DailyUsage(
-                subscription_id=sub.id,
-                date=target_date,
-                amount=last_phase.amount,
-                unit_price=last_phase.unit_price,
-                daily_cost=daily_cost,
-            )
-            db.add(usage)
+    first_day = date(year, month, 1)
+    days_in_m = _days_in_month(year, month)
+    today = date.today()
+
+    for day_offset in range(days_in_m):
+        target_date = first_day + timedelta(days=day_offset)
+        if target_date > today:
+            break
+        for sub in subs:
+            calculate_daily_usage_for_subscription(db, sub, target_date)
 
     db.commit()
 
 
 def generate_monthly_invoice(db: Session, city_id: int, year: int, month: int) -> MonthlyInvoice:
     """Generate or regenerate a monthly invoice for a city."""
+    # Backfill daily usages first
+    backfill_daily_usages(db, city_id, year, month)
+
     subs = db.query(Subscription).filter(Subscription.city_id == city_id).all()
     sub_ids = [s.id for s in subs]
 

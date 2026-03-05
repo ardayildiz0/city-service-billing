@@ -11,7 +11,7 @@ from app.models.daily_usage import DailyUsage
 from app.models.city import City
 from app.schemas.invoice import InvoiceOut, InvoiceRequest
 from app.middleware.auth import require_admin_or_superadmin, get_current_user
-from app.services.billing import generate_monthly_invoice
+from app.services.billing import generate_monthly_invoice, backfill_daily_usages
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -38,6 +38,10 @@ def get_usage_data(year: int, month: int, city_id: int | None = None, db: Sessio
     if city_id:
         _check_city_access(current_user, city_id)
         allowed_ids = [city_id]
+
+    # Backfill daily usages for all relevant cities
+    for cid in allowed_ids:
+        backfill_daily_usages(db, cid, year, month)
 
     results = []
     for cid in allowed_ids:
