@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.subscription import Subscription
@@ -95,8 +96,8 @@ def generate_monthly_invoice(db: Session, city_id: int, year: int, month: int) -
             db.query(DailyUsage)
             .filter(
                 DailyUsage.subscription_id.in_(sub_ids),
-                db.func.extract("year", DailyUsage.date) == year,
-                db.func.extract("month", DailyUsage.date) == month,
+                func.extract("year", DailyUsage.date) == year,
+                func.extract("month", DailyUsage.date) == month,
             )
             .all()
         )
